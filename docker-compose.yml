@@ -1,0 +1,178 @@
+version: '3.8'
+
+services:
+  # Application Container (PHP-FPM)
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile # Assumes your main Dockerfile is in the project root
+    container_name: real-estate-app
+    working_dir: /var/www/html # Explicitly set working directory
+    volumes:
+      - .:/var/www/html # Mount your entire Laravel project
+      - ./docker/php/uploads.ini:/usr/local/etc/php/conf.d/uploads.ini # Custom PHP settings
+      # Add named volumes for Laravel's writable directories for better persistence and clarity
+      - laravel_storage:/var/www/html/storage
+      - laravel_public_build:/var/www/html/public/build # For Vite/frontend build output
+    networks:
+      - real-estate-network
+    depends_on:
+      - mysql
+      - redis
+    restart: unless-stopped # Add restart policy for robustness
+    env_file:
+      - .env # Crucial: Load environment variables from your host .env file
+    # Optional: Pass specific environment variables directly (can override .env if needed)
+    environment:
+      - APP_ENV=${APP_ENV:-local} # Get from .env or default to 'local'
+      - APP_DEBUG=${APP_DEBUG:-true} # Get from .env or default to 'true'
+      - VITE_APP_URL=${APP_URL:-http://localhost} # Ensure Vite knows the app URL
+
+  # Nginx Web Server
+  nginx:
+    image: nginx:alpine
+    container_name: real-estate-nginx
+    ports:
+      - "80:80" # HTTP
+      - "443:443" # HTTPS
+    volumes:
+      - .:/var/www/html # Nginx needs access to the public directory
+      - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf
+      - ./docker/nginx/ssl:/etc/nginx/ssl # For SSL certificates
+    networks:
+      - real-estate-network
+    depends_on:
+      - app # Nginx depends on PHP-FPM being available
+    restart: unless-stopped # Add restart policy
+
+  # MySQL Database
+  mysql:
+    image: mysql:8.0
+    container_name: real-estate-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-root_password} # Use .env for password, provide default
+      MYSQL_DATABASE: ${DB_DATABASE:-real_estate_platform} # Use .env for database name, provide default
+      MYSQL_USER: ${DB_USERNAME:-real_estate_user} # Use .env for username, provide default
+      MYSQL_PASSWORD: ${DB_PASSWORD:-secret_password} # Use .env for password, provide default
+    ports:
+      - "3306:3306" # Expose for host access (e.g., MySQL Workbench)
+    volumes:
+      - mysql_data:/var/lib/mysql # Persistent volume for database data
+      - ./docker/mysql/init:/docker-entrypoint-initdb.d # For initial SQL scripts
+      - ./docker/mysql/conf.d:/etc/mysql/conf.d # For custom MySQL config
+    networks:
+      - real-estate-network
+    command: --default-authentication-plugin=mysql_native_password # Compatibility with older clients
+    restart: unless-stopped # Add restart policy
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: real-estate-redis
+    ports:
+      - "6379:6379" # Expose for host access
+    volumes:
+      - redis_data:/data # Persistent volume for Redis data
+      - ./docker/redis/redis.conf:/etc/redis/redis.conf
+    networks:
+      - real-estate-network
+    command: redis-server /etc/redis/redis.conf
+    restart: unless-stopped # Add restart policy
+
+  # Elasticsearch (for search)
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
+    container_name: real-estate-elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false # WARNING: Disable for production, enable and configure security!
+      - "ES_JAVA_OPTS=-Xms1g -Xmx1g" # Allocate memory for Elasticsearch
+    ports:
+      - "9200:9200" # HTTP
+      - "9300:9300" # Transport (for client libraries)
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data # Persistent volume for Elasticsearch data
+    networks:
+      - real-estate-network
+    restart: unless-stopped # Add restart policy
+
+  # Queue Worker
+  queue-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: real-estate-queue
+    working_dir: /var/www/html # Explicitly set working directory
+    command: php artisan queue:work --verbose --tries=3 --timeout=300
+    volumes:
+      - .:/var/www/html # Mount your Laravel project
+    networks:
+      - real-estate-network
+    depends_on:
+      - mysql
+      - redis
+      - app # Depends on app to ensure Composer dependencies are installed
+    restart: unless-stopped # Good for workers to restart on failure
+    env_file:
+      - .env # Crucial: Load environment variables
+
+  # Laravel Horizon (Queue Dashboard)
+  horizon:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: real-estate-horizon
+    working_dir: /var/www/html # Explicitly set working directory
+    command: php artisan horizon
+    volumes:
+      - .:/var/www/html # Mount your Laravel project
+    networks:
+      - real-estate-network
+    depends_on:
+      - mysql
+      - redis
+      - app # Depends on app to ensure Composer dependencies are installed
+    restart: unless-stopped # Good for Horizon to restart on failure
+    env_file:
+      - .env # Crucial: Load environment variables
+
+  # Node.js Development Server (for hot reloading with Vite)
+  node:
+    image: node:18-alpine
+    container_name: real-estate-node
+    working_dir: /var/www/html
+    ports:
+      - "5173:5173" # Vite's default port
+    volumes:
+      - .:/var/www/html # Mount your entire Laravel project
+      - /var/www/html/node_modules # Anonymous volume to prevent host node_modules interference
+    networks:
+      - real-estate-network
+    command: npm run dev
+    profiles:
+      - development # Only starts with `docker compose --profile development up`
+    # No restart policy for dev server, as manual restarts are common
+
+  # MailHog (Email testing in development)
+  mailhog:
+    image: mailhog/mailhog
+    container_name: real-estate-mailhog
+    ports:
+      - "1025:1025" # SMTP port for Laravel to send mail to
+      - "8025:8025" # Web UI for MailHog
+    networks:
+      - real-estate-network
+    profiles:
+      - development # Only starts with `docker compose --profile development up`
+    # No restart policy for dev tool
+
+networks:
+  real-estate-network:
+    driver: bridge
+
+volumes:
+  mysql_data:
+  redis_data:
+  elasticsearch_data:
+  laravel_storage: # New named volume for Laravel's storage
+  laravel_public_build: # New named volume for Laravel's public/build (Vite output)

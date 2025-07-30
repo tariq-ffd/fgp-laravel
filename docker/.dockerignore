@@ -1,0 +1,41 @@
+# Ignore Git related files
+.git
+.gitignore
+
+# Ignore Node.js modules and build artifacts
+node_modules
+npm-debug.log
+yarn-error.log
+package-lock.json # If you commit package-lock.json, remove this line.
+yarn.lock         # If you commit yarn.lock, remove this line.
+
+# Ignore Composer vendor directory
+vendor
+
+# Ignore Laravel-specific temporary/cache files
+.env
+.env.*
+storage/*.key
+storage/app/public/
+storage/framework/cache/
+storage/framework/sessions/
+storage/framework/views/
+bootstrap/cache/
+public/hot
+public/build
+
+# IDE and OS specific files
+.DS_Store
+.idea/
+.vscode/
+.nova/
+.fleet/
+.zed/
+.phpactor.json
+.phpstorm.meta.php
+_ide_helper.php
+_ide_helper_models.php
+
+# Docker-specific files that don't need to be in the image
+docker-compose.yml
+docker-compose.*.yml
