@@ -1,140 +1,144 @@
-version: '3.8'
-
 services:
   # Application Container (PHP-FPM)
   app:
     build:
       context: .
-      dockerfile: Dockerfile # Assumes your main Dockerfile is in the project root
+      dockerfile: Dockerfile
     container_name: fgp-laravel-app
-    working_dir: /var/www/html # Explicitly set working directory
+    working_dir: /var/www/html
     volumes:
-      - .:/var/www/html # Mount your entire Laravel project
-      - ./docker/php/uploads.ini:/usr/local/etc/php/conf.d/uploads.ini # Custom PHP settings
-      # Add named volumes for Laravel's writable directories for better persistence and clarity
+      - .:/var/www/html
+      - ./docker/php/uploads.ini:/usr/local/etc/php/conf.d/uploads.ini
+      # Use named volumes for better Windows performance
       - laravel_storage:/var/www/html/storage
-      - laravel_public_build:/var/www/html/public/build # For Vite/frontend build output
+      - laravel_bootstrap_cache:/var/www/html/bootstrap/cache
+      - laravel_public_build:/var/www/html/public/build
     networks:
       - fgp-laravel-network
     depends_on:
       - mysql
       - redis
-    restart: unless-stopped # Add restart policy for robustness
+    restart: unless-stopped
     env_file:
-      - .env # Crucial: Load environment variables from your host .env file
-    # Optional: Pass specific environment variables directly (can override .env if needed)
+      - .env
     environment:
-      - APP_ENV=${APP_ENV:-local} # Get from .env or default to 'local'
-      - APP_DEBUG=${APP_DEBUG:-true} # Get from .env or default to 'true'
-      - VITE_APP_URL=${APP_URL:-http://localhost} # Ensure Vite knows the app URL
+      - APP_ENV=${APP_ENV:-local}
+      - APP_DEBUG=${APP_DEBUG:-true}
+      - VITE_APP_URL=${APP_URL:-http://localhost}
 
   # Nginx Web Server
   nginx:
     image: nginx:alpine
     container_name: fgp-laravel-nginx
     ports:
-      - "80:80" # HTTP
-      - "443:443" # HTTPS
+      - "80:80"
+      - "443:443"
     volumes:
-      - .:/var/www/html # Nginx needs access to the public directory
+      - .:/var/www/html
       - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf
-      - ./docker/nginx/ssl:/etc/nginx/ssl # For SSL certificates
+      - ./docker/nginx/ssl:/etc/nginx/ssl
     networks:
       - fgp-laravel-network
     depends_on:
-      - app # Nginx depends on PHP-FPM being available
-    restart: unless-stopped # Add restart policy
+      - app
+    restart: unless-stopped
 
   # MySQL Database
   mysql:
     image: mysql:8.0
     container_name: fgp-laravel-mysql
     environment:
-      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-root_password} # Use .env for password, provide default
-      MYSQL_DATABASE: ${DB_DATABASE:-real_estate_platform} # Use .env for database name, provide default
-      MYSQL_USER: ${DB_USERNAME:-real_estate_user} # Use .env for username, provide default
-      MYSQL_PASSWORD: ${DB_PASSWORD:-secret_password} # Use .env for password, provide default
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-root_password}
+      MYSQL_DATABASE: ${DB_DATABASE:-real_estate_platform}
+      MYSQL_USER: ${DB_USERNAME:-real_estate_user}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-secret_password}
     ports:
-      - "3306:3306" # Expose for host access (e.g., MySQL Workbench)
+      - "3306:3306"
     volumes:
-      - mysql_data:/var/lib/mysql # Persistent volume for database data
-      - ./docker/mysql/init:/docker-entrypoint-initdb.d # For initial SQL scripts
-      - ./docker/mysql/conf.d:/etc/mysql/conf.d # For custom MySQL config
+      - mysql_data:/var/lib/mysql
+      - ./docker/mysql/init:/docker-entrypoint-initdb.d
+      - ./docker/mysql/conf.d:/etc/mysql/conf.d
     networks:
       - fgp-laravel-network
-    command: --default-authentication-plugin=mysql_native_password # Compatibility with older clients
-    restart: unless-stopped # Add restart policy
+    command: --default-authentication-plugin=mysql_native_password
+    restart: unless-stopped
 
   # Redis Cache
   redis:
     image: redis:7-alpine
     container_name: fgp-laravel-redis
     ports:
-      - "6379:6379" # Expose for host access
+      - "6379:6379"
     volumes:
-      - redis_data:/data # Persistent volume for Redis data
+      - redis_data:/data
       - ./docker/redis/redis.conf:/etc/redis/redis.conf
     networks:
       - fgp-laravel-network
     command: redis-server /etc/redis/redis.conf
-    restart: unless-stopped # Add restart policy
+    restart: unless-stopped
 
-  # Elasticsearch (for search)
+  # Elasticsearch (for search) - Optional for development
   elasticsearch:
-    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.0
     container_name: fgp-laravel-elasticsearch
     environment:
       - discovery.type=single-node
-      - xpack.security.enabled=false # WARNING: Disable for production, enable and configure security!
-      - "ES_JAVA_OPTS=-Xms1g -Xmx1g" # Allocate memory for Elasticsearch
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"  # Reduced memory for development
     ports:
-      - "9200:9200" # HTTP
-      - "9300:9300" # Transport (for client libraries)
+      - "9200:9200"
+      - "9300:9300"
     volumes:
-      - elasticsearch_data:/usr/share/elasticsearch/data # Persistent volume for Elasticsearch data
+      - elasticsearch_data:/usr/share/elasticsearch/data
     networks:
       - fgp-laravel-network
-    restart: unless-stopped # Add restart policy
+    restart: unless-stopped
+    profiles:
+      - elasticsearch  # Make it optional
 
-  # Queue Worker
+  # Queue Worker - Optional for development
   queue-worker:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: fgp-laravel-queue
-    working_dir: /var/www/html # Explicitly set working directory
+    working_dir: /var/www/html
     command: php artisan queue:work --verbose --tries=3 --timeout=300
     volumes:
-      - .:/var/www/html # Mount your Laravel project
+      - .:/var/www/html
     networks:
       - fgp-laravel-network
     depends_on:
       - mysql
       - redis
-      - app # Depends on app to ensure Composer dependencies are installed
-    restart: unless-stopped # Good for workers to restart on failure
+      - app
+    restart: unless-stopped
     env_file:
-      - .env # Crucial: Load environment variables
+      - .env
+    profiles:
+      - queue
 
-  # Laravel Horizon (Queue Dashboard)
+  # Laravel Horizon (Queue Dashboard) - Optional for development
   horizon:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: fgp-laravel-horizon
-    working_dir: /var/www/html # Explicitly set working directory
+    working_dir: /var/www/html
     command: php artisan horizon
     volumes:
-      - .:/var/www/html # Mount your Laravel project
+      - .:/var/www/html
     networks:
       - fgp-laravel-network
     depends_on:
       - mysql
       - redis
-      - app # Depends on app to ensure Composer dependencies are installed
-    restart: unless-stopped # Good for Horizon to restart on failure
+      - app
+    restart: unless-stopped
     env_file:
-      - .env # Crucial: Load environment variables
+      - .env
+    profiles:
+      - queue
 
   # Node.js Development Server (for hot reloading with Vite)
   node:
@@ -142,29 +146,28 @@ services:
     container_name: fgp-laravel-node
     working_dir: /var/www/html
     ports:
-      - "5173:5173" # Vite's default port
+      - "5173:5173"
+      - "5174:5174"  # Alternative port
     volumes:
-      - .:/var/www/html # Mount your entire Laravel project
-      - /var/www/html/node_modules # Anonymous volume to prevent host node_modules interference
+      - .:/var/www/html
+      - node_modules:/var/www/html/node_modules  # Named volume for better Windows performance
     networks:
       - fgp-laravel-network
-    command: npm run dev
+    command: sh -c "npm install && npm run dev"
     profiles:
-      - development # Only starts with `docker compose --profile development up`
-    # No restart policy for dev server, as manual restarts are common
+      - development
 
   # MailHog (Email testing in development)
   mailhog:
     image: mailhog/mailhog
     container_name: fgp-laravel-mailhog
     ports:
-      - "1025:1025" # SMTP port for Laravel to send mail to
-      - "8025:8025" # Web UI for MailHog
+      - "1025:1025"
+      - "8025:8025"
     networks:
       - fgp-laravel-network
     profiles:
-      - development # Only starts with `docker compose --profile development up`
-    # No restart policy for dev tool
+      - development
 
 networks:
   fgp-laravel-network:
@@ -174,5 +177,7 @@ volumes:
   mysql_data:
   redis_data:
   elasticsearch_data:
-  laravel_storage: # New named volume for Laravel's storage
-  laravel_public_build: # New named volume for Laravel's public/build (Vite output)
+  laravel_storage:
+  laravel_bootstrap_cache:
+  laravel_public_build:
+  node_modules:  # For better Windows performance with Node.js
